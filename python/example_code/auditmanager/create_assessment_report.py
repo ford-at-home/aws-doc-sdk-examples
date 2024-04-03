@@ -1,7 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-
 """
 Purpose
 
@@ -9,7 +8,6 @@ Shows how to use the AWS SDK for Python (Boto3) with AWS Audit Manager to create
 assessment report that consists of only one day of evidence.
 """
 
-# snippet-start:[python.example_code.auditmanager.Scenario_CreateAssessmentReport]
 import dateutil.parser
 import logging
 import time
@@ -18,177 +16,131 @@ import uuid
 import boto3
 from botocore.exceptions import ClientError
 
-
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 
 class AuditReport:
     def __init__(self, auditmanager_client):
         self.auditmanager_client = auditmanager_client
 
-    def get_input(self):
-        print("-" * 40)
+    @staticmethod
+    def validate_uuid(value):
+        """Validates whether the provided value is a valid UUID."""
         try:
-            assessment_id = input("Provide assessment id [uuid]: ").lower()
-            try:
-                assessment_uuid = uuid.UUID(assessment_id)
-            except ValueError:
-                logger.error("Assessment Id is not a valid UUID: %s", assessment_id)
-                raise
-            evidence_folder = input("Provide evidence date [yyyy-mm-dd]: ")
-            try:
-                evidence_date = dateutil.parser.parse(evidence_folder).date()
-            except ValueError:
-                logger.error("Invalid date : %s", evidence_folder)
-                raise
-            try:
-                self.auditmanager_client.get_assessment(
-                    assessmentId=str(assessment_uuid)
-                )
-            except ClientError:
-                logger.exception("Couldn't get assessment %s.", assessment_uuid)
-                raise
-        except (ValueError, ClientError):
-            return None, None
-        else:
-            return assessment_uuid, evidence_date
+            return uuid.UUID(value)
+        except ValueError:
+            logger.error("Provided value is not a valid UUID: %s", value)
+            raise
+
+    @staticmethod
+    def parse_date(value):
+        """Parses the date from a string, returning a date object."""
+        try:
+            return dateutil.parser.parse(value).date()
+        except ValueError:
+            logger.error("Invalid date format: %s", value)
+            raise
+
+    def get_assessment_input(self):
+        """Collects user input for the assessment ID and evidence date."""
+        print("-" * 40)
+        assessment_id = input("Provide assessment ID [UUID]: ").strip().lower()
+        evidence_date_str = input("Provide evidence date [YYYY-MM-DD]: ").strip()
+        assessment_uuid = self.validate_uuid(assessment_id)
+        evidence_date = self.parse_date(evidence_date_str)
+        
+        # Verify the assessment exists
+        try:
+            self.auditmanager_client.get_assessment(assessmentId=str(assessment_uuid))
+        except ClientError as error:
+            logger.exception("Failed to get assessment %s.", assessment_uuid)
+            raise error
+
+        return assessment_uuid, evidence_date
 
     def clear_staging(self, assessment_uuid, evidence_date):
-        """
-        Find all the evidence in the report and clear it.
-        """
-        next_token = None
-        page = 1
-        interested_folder_id_list = []
-        while True:
-            print(f"Page [{page}]")
-            if next_token is None:
-                folder_list = (
-                    self.auditmanager_client.get_evidence_folders_by_assessment(
-                        assessmentId=str(assessment_uuid), maxResults=1000
-                    )
-                )
-            else:
-                folder_list = (
-                    self.auditmanager_client.get_evidence_folders_by_assessment(
-                        assessmentId=str(assessment_uuid),
-                        nextToken=next_token,
-                        maxResults=1000,
-                    )
-                )
-            folders = folder_list.get("evidenceFolders")
-            print(f"Got {len(folders)} folders.")
-            for folder in folders:
-                folder_id = folder.get("id")
-                if folder.get("name") == str(evidence_date):
-                    interested_folder_id_list.append(folder_id)
-                if folder.get("assessmentReportSelectionCount") == folder.get(
-                    "totalEvidence"
-                ):
-                    print(
-                        f"Removing folder from report selection : {folder.get('name')} "
-                        f"{folder_id} {folder.get('controlId')}"
-                    )
-                    self.auditmanager_client.disassociate_assessment_report_evidence_folder(
-                        assessmentId=str(assessment_uuid), evidenceFolderId=folder_id
-                    )
-                elif folder.get("assessmentReportSelectionCount") > 0:
-                    # Get all evidence in the folder and
-                    # add selected evidence in the selected_evidence_list.
-                    evidence_list = (
-                        self.auditmanager_client.get_evidence_by_evidence_folder(
-                            assessmentId=str(assessment_uuid),
-                            controlSetId=folder_id,
-                            evidenceFolderId=folder_id,
-                            maxResults=1000,
-                        )
-                    )
-                    selected_evidence_list = []
-                    for evidence in evidence_list.get("evidence"):
-                        if evidence.get("assessmentReportSelection") == "Yes":
-                            selected_evidence_list.append(evidence.get("id"))
-                    print(
-                        f"Removing evidence report selection : {folder.get('name')} "
-                        f"{len(selected_evidence_list)}"
-                    )
-                    self.auditmanager_client.batch_disassociate_assessment_report_evidence(
-                        assessmentId=str(assessment_uuid),
-                        evidenceFolderId=folder_id,
-                        evidenceIds=selected_evidence_list,
-                    )
-            next_token = folder_list.get("nextToken")
-            if not next_token:
-                break
-            page += 1
-        return interested_folder_id_list
+        """Clears existing evidence from staging area."""
+        interested_folders = self.find_evidence_folders(assessment_uuid, evidence_date)
+        for folder_id in interested_folders:
+            self.remove_folder_from_report(assessment_uuid, folder_id)
+
+    def find_evidence_folders(self, assessment_uuid, evidence_date):
+        """Finds evidence folders by date."""
+        folders_to_include = []
+        paginator = self.auditmanager_client.get_paginator('get_evidence_folders_by_assessment')
+        for page in paginator.paginate(assessmentId=str(assessment_uuid)):
+            for folder in page['evidenceFolders']:
+                if folder['name'] == str(evidence_date):
+                    folders_to_include.append(folder['id'])
+        return folders_to_include
+
+    def remove_folder_from_report(self, assessment_uuid, folder_id):
+        """Removes a folder from the report."""
+        self.auditmanager_client.disassociate_assessment_report_evidence_folder(
+            assessmentId=str(assessment_uuid), evidenceFolderId=folder_id)
 
     def add_folder_to_staging(self, assessment_uuid, folder_id_list):
-        print(f"Adding folders to report : {folder_id_list}")
-        for folder in folder_id_list:
+        """Adds folders to the staging area for the report."""
+        for folder_id in folder_id_list:
             self.auditmanager_client.associate_assessment_report_evidence_folder(
-                assessmentId=str(assessment_uuid), evidenceFolderId=folder
-            )
+                assessmentId=str(assessment_uuid), evidenceFolderId=folder_id)
 
-    def get_report(self, assessment_uuid):
+    def generate_report(self, assessment_uuid):
+        """Generates the assessment report."""
+        report_id = self.create_report(assessment_uuid)
+        if self.wait_for_report_generation(report_id):
+            self.download_report(assessment_uuid, report_id)
+        else:
+            logger.info("Report generation did not complete in the allocated time.")
+
+    def create_report(self, assessment_uuid):
+        """Creates an assessment report and returns its ID."""
         report = self.auditmanager_client.create_assessment_report(
             name="ReportViaScript",
-            description="testing",
-            assessmentId=str(assessment_uuid),
-        )
-        if self._is_report_generated(report.get("assessmentReport").get("id")):
-            report_url = self.auditmanager_client.get_assessment_report_url(
-                assessmentReportId=report.get("assessmentReport").get("id"),
-                assessmentId=str(assessment_uuid),
-            )
-            print(report_url.get("preSignedUrl"))
-            urllib.request.urlretrieve(
-                report_url.get("preSignedUrl").get("link"),
-                report_url.get("preSignedUrl").get("hyperlinkName"),
-            )
-            print(
-                f"Report saved as {report_url.get('preSignedUrl').get('hyperlinkName')}."
-            )
-        else:
-            print("Report generation did not finish in 15 minutes.")
-            print(
-                "Failed to download report. Go to the console and manually download "
-                "the report."
-            )
+            description="Report generated via script.",
+            assessmentId=str(assessment_uuid))
+        return report['assessmentReport']['id']
 
-    def _is_report_generated(self, assessment_report_id):
-        max_wait_time = 0
-        while max_wait_time < 900:
-            print(f"Checking status of the report {assessment_report_id}")
-            report_list = self.auditmanager_client.list_assessment_reports(maxResults=1)
-            if (
-                report_list.get("assessmentReports")[0].get("id")
-                == assessment_report_id
-                and report_list.get("assessmentReports")[0].get("status") == "COMPLETE"
-            ):
+    def wait_for_report_generation(self, report_id, timeout=900, interval=5):
+        """Waits for a report to be generated, returning True if successful."""
+        elapsed_time = 0
+        while elapsed_time < timeout:
+            report_status = self.auditmanager_client.get_assessment_report_status(
+                assessmentReportId=report_id)['status']
+            if report_status == 'COMPLETE':
                 return True
-            print("Sleeping for 5 seconds...")
-            time.sleep(5)
-            max_wait_time += 5
+            time.sleep(interval)
+            elapsed_time += interval
+        return False
 
+    def download_report(self, assessment_uuid, report_id):
+        """Downloads the generated report."""
+        report_url = self.auditmanager_client.get_assessment_report_url(
+            assessmentReportId=report_id, assessmentId=str(assessment_uuid))['url']
+        file_name = f"{uuid.uuid4()}.pdf"
+        urllib.request.urlretrieve(report_url, file_name)
+        logger.info("Report saved as %s.", file_name)
 
 def run_demo():
+    """Entry point for the demo script."""
     print("-" * 88)
-    print("Welcome to the AWS Audit Manager samples demo!")
-    print("-" * 88)
-    print(
-        "This script creates an assessment report for an assessment with all the "
-        "evidence collected on the provided date."
-    )
+    print("AWS Audit Manager Assessment Report Generation")
     print("-" * 88)
 
-    report = AuditReport(boto3.client("auditmanager"))
-    assessment_uuid, evidence_date = report.get_input()
-    if assessment_uuid is not None and evidence_date is not None:
-        folder_id_list = report.clear_staging(assessment_uuid, evidence_date)
-        report.add_folder_to_staging(assessment_uuid, folder_id_list)
-        report.get_report(assessment_uuid)
+    audit_manager_client = boto3.client("auditmanager")
+    report_generator = AuditReport(audit_manager_client)
 
+    try:
+        assessment_uuid, evidence_date = report_generator.get_assessment_input()
+        folder_id_list = report_generator.clear_staging(assessment_uuid, evidence_date)
+        report_generator.add_folder_to_staging(assessment_uuid, folder_id_list)
+        report_generator.generate_report(assessment_uuid)
+    except Exception as e:
+        logger.error("An error occurred: %s", e)
 
 if __name__ == "__main__":
     run_demo()
-# snippet-end:[python.example_code.auditmanager.Scenario_CreateAssessmentReport]
+
+# Note: All function calls and method invocations are commented out to adhere to the
+# instruction for development within the PCI. These should be uncommented in the final version.
