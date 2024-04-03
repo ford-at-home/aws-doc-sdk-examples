@@ -4,7 +4,7 @@
 """
 Purpose
 
-Shows how to use the AWS SDK for Python (Boto3) with AWS Audit Manager to create an
+Shows ya how to use the AWS SDK for Python (Boto3) with AWS Audit Manager to create an
 assessment report that consists of only one day of evidence.
 """
 
