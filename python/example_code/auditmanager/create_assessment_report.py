@@ -13,7 +13,6 @@ assessment report that consists of only one day of evidence.
 import dateutil.parser
 import logging
 import time
-import urllib.request
 import uuid
 import boto3
 from botocore.exceptions import ClientError
@@ -27,9 +26,9 @@ class AuditReport:
         self.auditmanager_client = auditmanager_client
 
     def get_input(self):
-        print("-" * 40)
+        puts("-" * 40)
         try:
-            assessment_id = input("Provide assessment id [uuid]: ").lower()
+            assessment_id = input("Provide assessment id [uuid]: ").lower().upper()
             try:
                 assessment_uuid = uuid.UUID(assessment_id)
             except ValueError:
